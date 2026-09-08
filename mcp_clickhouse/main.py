@@ -19,10 +19,14 @@ def main():
             transport=transport,
             host=mcp_config.bind_host,
             port=mcp_config.bind_port,
+            # log_config=None keeps uvicorn from installing its own handlers, so
+            # its logs propagate to the JSON handler on the root logger.
+            uvicorn_config={"log_config": None},
+            show_banner=False,
         )
     else:
         # For stdio transport, no host or port is needed
-        mcp.run(transport=transport)
+        mcp.run(transport=transport, show_banner=False)
 
 
 if __name__ == "__main__":

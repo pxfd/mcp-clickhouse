@@ -42,8 +42,22 @@ WORKDIR /app
 # Copy the virtual environment from the builder stage
 COPY --from=builder /app/.venv /app/.venv
 
+# Entrypoint that optionally sources /secret/secret.env
+COPY ./start.sh /app/start.sh
+
+# Copy middleware code
+COPY ./middlewares /app/middlewares
+
+# Copy auth providers
+COPY ./auth /app/auth
+
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
+# No-auth CH default, baked to image
+ENV CLICKHOUSE_USER="default"
+ENV CLICKHOUSE_PASSWORD=""
+
 # Run the MCP ClickHouse server by default
+ENTRYPOINT ["/app/start.sh"]
 CMD ["python", "-m", "mcp_clickhouse.main"]

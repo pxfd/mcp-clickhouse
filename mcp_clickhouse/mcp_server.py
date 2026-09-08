@@ -42,6 +42,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
+from mcp_clickhouse.json_logging import setup_json_logging
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 
@@ -151,10 +152,8 @@ _CLIENT_CONFIG_OVERRIDES_UNSET = object()
 _NESTED_CLIENT_CONFIG_KEYS = ("settings", "generic_args")
 _REJECTED_ROLE_OVERRIDE_KEYS = ("role", "ch_role")
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Configure logging (single-line JSON on stderr, for log shipping)
+setup_json_logging()
 logger = logging.getLogger(MCP_SERVER_NAME)
 
 _load_default_dotenv()
@@ -917,9 +916,7 @@ def result_to_column(query_columns, result) -> List[Column]:
 _JS_MAX_SAFE_INTEGER = 9007199254740991
 
 
-def _stringify_unsafe_integers(
-    obj: Any, active_container_ids: Optional[set[int]] = None
-) -> Any:
+def _stringify_unsafe_integers(obj: Any, active_container_ids: Optional[set[int]] = None) -> Any:
     if isinstance(obj, bool):
         return obj
     if isinstance(obj, int):
@@ -1334,31 +1331,23 @@ def _list_tables_with_config(
         include_detailed_columns,
     )
 
-    try:
-        for attempt in range(2):
-            entry = None
-            try:
-                entry = _acquire_clickhouse_client(config)
-                client = entry.client
-                prepared_result = _list_tables_impl(
-                    client,
-                    database,
-                    like,
-                    not_like,
-                    page_token,
-                    page_size,
-                    include_detailed_columns,
-                    claimed_page_state,
-                )
-                break
-            except Exception as err:
-                if attempt == 0 and _is_connection_error(err):
-                    logger.warning("list_tables connection error, retrying: %s", err)
-                    if entry is not None:
-                        _evict_cached_client(config, entry.client)
-                    continue
-                raise
-            finally:
+    for attempt in range(2):
+        entry = None
+        try:
+            entry = _acquire_clickhouse_client(config)
+            client = entry.client
+            return _list_tables_impl(
+                client,
+                database,
+                like,
+                not_like,
+                page_token,
+                page_size,
+                include_detailed_columns,
+            )
+        except Exception as err:
+            if attempt == 0 and _is_connection_error(err):
+                logger.warning("list_tables connection error, retrying: %s", err)
                 if entry is not None:
                     _release_client_entry(entry)
     except BaseException:
@@ -1457,20 +1446,36 @@ def _list_tables_impl(
             )
         next_page_token = pending_page_token.token if pending_page_token else None
 
-        logger.info(
-            "Returned page with %s tables (total: %s), next_page_token=%s",
-            len(tables),
-            len(table_names),
-            next_page_token,
-        )
-        return _PreparedListTablesResult(
-            response=_serialize_tool_result({
-                "tables": [asdict(table) for table in tables],
-                "next_page_token": next_page_token,
-                "total_tables": len(table_names),
-            }),
-            pending_page_token=pending_page_token,
-        )
+            tables, end_idx, has_more = get_paginated_table_data(
+                client,
+                database,
+                table_names,
+                start_idx,
+                page_size,
+                include_detailed_columns,
+            )
+
+            next_page_token = None
+            if has_more:
+                next_page_token = create_page_token(
+                    database, like, not_like, table_names, end_idx, include_detailed_columns
+                )
+
+            del table_pagination_cache[page_token]
+
+            logger.info(
+                "Returned page with %s tables (total: %s), next_page_token=%s",
+                len(tables),
+                len(table_names),
+                next_page_token,
+            )
+            return _serialize_tool_result(
+                {
+                    "tables": [asdict(table) for table in tables],
+                    "next_page_token": next_page_token,
+                    "total_tables": len(table_names),
+                }
+            )
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -1498,13 +1503,12 @@ def _list_tables_impl(
         next_page_token,
     )
 
-    return _PreparedListTablesResult(
-        response=_serialize_tool_result({
+    return _serialize_tool_result(
+        {
             "tables": [asdict(table) for table in tables],
             "next_page_token": next_page_token,
             "total_tables": len(table_names),
-        }),
-        pending_page_token=pending_page_token,
+        }
     )
 
 
@@ -1701,9 +1705,7 @@ def _cancel_query(query_id: str):
             return
 
         logger.info("Cancelling query %s via KILL QUERY", safe_id)
-        client.command(
-            f"KILL QUERY WHERE query_id = {format_query_value(safe_id)}"
-        )
+        client.command(f"KILL QUERY WHERE query_id = {format_query_value(safe_id)}")
         logger.info("Successfully cancelled query %s", safe_id)
     except Exception as e:
         logger.warning("Failed to cancel query %s: %s", safe_id, e)
@@ -1759,7 +1761,8 @@ def run_query(query: str) -> str:
         if in_flight >= _max_workers:
             logger.warning(
                 "Thread pool saturated: %d in-flight vs %d workers",
-                in_flight, _max_workers,
+                in_flight,
+                _max_workers,
             )
 
         try:
@@ -1771,9 +1774,7 @@ def run_query(query: str) -> str:
         try:
             return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
-            )
+            logger.warning("Query %s timed out after %s seconds: %s", query_id, timeout_secs, query)
             if future.cancel():
                 _remove_active_query(query_id, state)
             else:
@@ -1853,7 +1854,8 @@ async def run_query_async(query: str) -> str:
         if in_flight >= _max_workers:
             logger.warning(
                 "Thread pool saturated: %d in-flight vs %d workers",
-                in_flight, _max_workers,
+                in_flight,
+                _max_workers,
             )
 
         try:
@@ -1863,9 +1865,7 @@ async def run_query_async(query: str) -> str:
             raise
         timeout_secs = get_mcp_config().query_timeout
         try:
-            return await asyncio.wait_for(
-                asyncio.wrap_future(future), timeout=timeout_secs
-            )
+            return await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_secs)
         except asyncio.CancelledError:
             if future.cancel():
                 _remove_active_query(query_id, state)
@@ -1874,9 +1874,7 @@ async def run_query_async(query: str) -> str:
                 await _cancel_query_async(query_id)
             raise
         except asyncio.TimeoutError:
-            logger.warning(
-                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
-            )
+            logger.warning("Query %s timed out after %s seconds: %s", query_id, timeout_secs, query)
             if future.cancel():
                 _remove_active_query(query_id, state)
             else:
@@ -2023,9 +2021,7 @@ def _warn_if_overprivileged(client) -> None:
                 ", ".join(sorted(matched)),
             )
         for grant in role_grants:
-            logger.info(
-                "Grants advisory cannot inspect privileges granted via roles: %s", grant
-            )
+            logger.info("Grants advisory cannot inspect privileges granted via roles: %s", grant)
     except Exception as e:
         logger.debug("Grants advisory skipped: %s", e)
 
@@ -2224,11 +2220,7 @@ def _return_client(client, config: dict):
     """Run base-client checks before returning a cached or new client."""
     overrides_applied = getattr(config, "overrides_applied", False)
     server_config = get_config()
-    if (
-        not overrides_applied
-        and server_config.allow_write_access
-        and not server_config.allow_drop
-    ):
+    if not overrides_applied and server_config.allow_write_access and not server_config.allow_drop:
         _warn_if_overprivileged(client)
     return client
 
@@ -2244,9 +2236,7 @@ def _warn_for_native_protocol_port(config: dict) -> None:
         )
 
 
-def _prepare_client_entry(
-    entry: _ClientCacheEntry, config: dict
-) -> _ClientCacheEntry:
+def _prepare_client_entry(entry: _ClientCacheEntry, config: dict) -> _ClientCacheEntry:
     """Run base-client checks while the caller holds a lease."""
     try:
         _return_client(entry.client, config)
@@ -2537,10 +2527,12 @@ def execute_chdb_query(query: str):
 def _process_chdb_result(result) -> str:
     if isinstance(result, dict) and "error" in result:
         logger.warning(f"chDB query failed: {result['error']}")
-        return _serialize_tool_result({
-            "status": "error",
-            "message": f"chDB query failed: {result['error']}",
-        })
+        return _serialize_tool_result(
+            {
+                "status": "error",
+                "message": f"chDB query failed: {result['error']}",
+            }
+        )
     return _serialize_tool_result(result)
 
 
@@ -2556,10 +2548,12 @@ def run_chdb_select_query(query: str) -> str:
         except concurrent.futures.TimeoutError:
             logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
+            return _serialize_tool_result(
+                {
+                    "status": "error",
+                    "message": f"chDB query timed out after {timeout_secs} seconds",
+                }
+            )
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
         return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
@@ -2572,18 +2566,16 @@ async def run_chdb_select_query_async(query: str) -> str:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
-            result = await asyncio.wait_for(
-                asyncio.wrap_future(future), timeout=timeout_secs
-            )
+            result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_secs)
         except asyncio.TimeoutError:
-            logger.warning(
-                f"chDB query timed out after {timeout_secs} seconds: {query}"
-            )
+            logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
+            return _serialize_tool_result(
+                {
+                    "status": "error",
+                    "message": f"chDB query timed out after {timeout_secs} seconds",
+                }
+            )
 
         return await asyncio.to_thread(_process_chdb_result, result)
     except Exception as e:
