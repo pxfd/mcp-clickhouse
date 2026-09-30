@@ -688,6 +688,12 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
   * Metadata tools use a separate pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so schema discovery cannot delay queries
+* `CLICKHOUSE_SERVER_INSTRUCTIONS`: Extra deployment-specific instructions advertised to MCP clients
+  * Default: None
+  * The text is appended after the built-in server instructions. It does not replace them. Leading and trailing whitespace is trimmed, and a blank value is ignored
+  * Use it to describe your cluster to agents, for example which tables to query, storage tiering, retention, and required filters
+  * Multi-line values are supported. Quote them in `.env` files. Do not put secrets here, because every connected client receives this text
+  * Read once at startup
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

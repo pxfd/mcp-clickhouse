@@ -4,27 +4,25 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 # Install the project into `/app`
 WORKDIR /app
 
-# Enable bytecode compilation
-ENV UV_COMPILE_BYTECODE=1
+# Bytecode is not precompiled: it would add ~50 MB to the image. Python compiles
+# modules on first import instead, which costs a little extra startup time.
+ENV UV_COMPILE_BYTECODE=0
 
 # Copy from the cache instead of linking since it's a mounted volume
 ENV UV_LINK_MODE=copy
 
-# Install git and build dependencies for ClickHouse client
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends git build-essential
-
-# Install the project's dependencies using the lockfile and settings
+# Install only the dependencies first. This layer is reused until uv.lock changes.
+# All locked dependencies ship prebuilt wheels, so no compiler or git is needed.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=README.md,target=README.md \
     uv sync --locked --no-install-project --no-dev
 
-# Then, add the rest of the project source code and install it
-# Installing separately from its dependencies allows optimal layer caching
-COPY . /app
+# Then install the package itself. Only the files needed to build it are copied, so
+# changes to start.sh, middlewares, auth or instructions do not rebuild the venv.
+COPY pyproject.toml uv.lock README.md /app/
+COPY mcp_clickhouse /app/mcp_clickhouse
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
@@ -39,9 +37,17 @@ LABEL io.modelcontextprotocol.server.name="io.github.ClickHouse/mcp-clickhouse"
 # Set the working directory
 WORKDIR /app
 
-# Copy the virtual environment from the builder stage
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH"
+
+# No-auth CH default, baked to image
+ENV CLICKHOUSE_USER="default"
+ENV CLICKHOUSE_PASSWORD=""
+
+# Copy the virtual environment from the builder stage (largest layer, changes least often)
 COPY --from=builder /app/.venv /app/.venv
 
+# Small files that change most often go last, so edits only rebuild these layers.
 # Entrypoint that optionally sources /secret/secret.env
 COPY ./start.sh /app/start.sh
 
@@ -51,12 +57,8 @@ COPY ./middlewares /app/middlewares
 # Copy auth providers
 COPY ./auth /app/auth
 
-# Place executables in the environment at the front of the path
-ENV PATH="/app/.venv/bin:$PATH"
-
-# No-auth CH default, baked to image
-ENV CLICKHOUSE_USER="default"
-ENV CLICKHOUSE_PASSWORD=""
+# Copy default MCP server instructions (loaded by start.sh)
+COPY ./instructions /app/instructions
 
 # Run the MCP ClickHouse server by default
 ENTRYPOINT ["/app/start.sh"]

@@ -859,7 +859,7 @@ def test_project_cli_uses_the_secured_builtin_http_runner(monkeypatch: pytest.Mo
     assert called["transport"] == "http"
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 4200
-    assert called["uvicorn_config"] == {"proxy_headers": False}
+    assert called["uvicorn_config"] == {"log_config": None, "proxy_headers": False}
 
 
 @pytest.mark.asyncio

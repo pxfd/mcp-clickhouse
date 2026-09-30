@@ -70,3 +70,5 @@ Dockerfile
 
 # Claude AI files
 .claude/ 
+# Serena AI files
+.serena/

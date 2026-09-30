@@ -91,6 +91,11 @@
           "format": "number",
           "default": "10",
           "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_SERVER_INSTRUCTIONS",
+          "description": "Extra deployment-specific instructions appended to the server instructions sent to MCP clients",
+          "isRequired": false
         }
       ]
     },
@@ -172,6 +177,11 @@
           "description": "Maximum query worker thread pool size",
           "format": "number",
           "default": "10",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_SERVER_INSTRUCTIONS",
+          "description": "Extra deployment-specific instructions appended to the server instructions sent to MCP clients",
           "isRequired": false
         }
       ]

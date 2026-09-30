@@ -333,6 +333,8 @@ class MCPServerConfig:
             CLICKHOUSE_MCP_AUTH_DISABLED=true.
         CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication entirely (default: false,
             development only)
+        CLICKHOUSE_SERVER_INSTRUCTIONS: Extra deployment-specific instructions appended
+            to the server instructions advertised to MCP clients (default: none)
     """
 
     @property
@@ -447,6 +449,12 @@ class MCPServerConfig:
     def auth_disabled(self) -> bool:
         """Get whether authentication is disabled."""
         return os.getenv("CLICKHOUSE_MCP_AUTH_DISABLED", "false").lower() == "true"
+
+    @property
+    def server_instructions(self) -> Optional[str]:
+        """Get extra server instructions, or None when unset or blank."""
+        instructions = os.getenv("CLICKHOUSE_SERVER_INSTRUCTIONS", "").strip()
+        return instructions or None
 
 
 _MCP_CONFIG_INSTANCE = None

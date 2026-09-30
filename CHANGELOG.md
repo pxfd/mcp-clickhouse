@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- `CLICKHOUSE_SERVER_INSTRUCTIONS` appends deployment-specific text to the server instructions advertised to MCP clients.
+
 ### Changed
 - The minimum clickhouse-connect version is now 1.0.0. Locked development and container environments now use clickhouse-connect 1.8.0 and cryptography 50.0.1.
 - Local development and README launcher examples now use Python 3.12. CI covers Python 3.10 through 3.14, with Python 3.10 retained as the supported minimum.

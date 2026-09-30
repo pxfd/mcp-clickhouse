@@ -44,7 +44,7 @@ from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.json_logging import setup_json_logging
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
-from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
+from mcp_clickhouse.skills_advisor import build_server_instructions
 
 
 @dataclass
@@ -774,7 +774,7 @@ class ClickHouseFastMCP(FastMCP):
 mcp = ClickHouseFastMCP(
     name=MCP_SERVER_NAME,
     version=MCP_SERVER_VERSION,
-    instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
+    instructions=build_server_instructions(get_mcp_config().server_instructions),
 )
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
@@ -1331,23 +1331,31 @@ def _list_tables_with_config(
         include_detailed_columns,
     )
 
-    for attempt in range(2):
-        entry = None
-        try:
-            entry = _acquire_clickhouse_client(config)
-            client = entry.client
-            return _list_tables_impl(
-                client,
-                database,
-                like,
-                not_like,
-                page_token,
-                page_size,
-                include_detailed_columns,
-            )
-        except Exception as err:
-            if attempt == 0 and _is_connection_error(err):
-                logger.warning("list_tables connection error, retrying: %s", err)
+    try:
+        for attempt in range(2):
+            entry = None
+            try:
+                entry = _acquire_clickhouse_client(config)
+                client = entry.client
+                prepared_result = _list_tables_impl(
+                    client,
+                    database,
+                    like,
+                    not_like,
+                    page_token,
+                    page_size,
+                    include_detailed_columns,
+                    claimed_page_state,
+                )
+                break
+            except Exception as err:
+                if attempt == 0 and _is_connection_error(err):
+                    logger.warning("list_tables connection error, retrying: %s", err)
+                    if entry is not None:
+                        _evict_cached_client(config, entry.client)
+                    continue
+                raise
+            finally:
                 if entry is not None:
                     _release_client_entry(entry)
     except BaseException:
@@ -1446,36 +1454,20 @@ def _list_tables_impl(
             )
         next_page_token = pending_page_token.token if pending_page_token else None
 
-            tables, end_idx, has_more = get_paginated_table_data(
-                client,
-                database,
-                table_names,
-                start_idx,
-                page_size,
-                include_detailed_columns,
-            )
-
-            next_page_token = None
-            if has_more:
-                next_page_token = create_page_token(
-                    database, like, not_like, table_names, end_idx, include_detailed_columns
-                )
-
-            del table_pagination_cache[page_token]
-
-            logger.info(
-                "Returned page with %s tables (total: %s), next_page_token=%s",
-                len(tables),
-                len(table_names),
-                next_page_token,
-            )
-            return _serialize_tool_result(
-                {
-                    "tables": [asdict(table) for table in tables],
-                    "next_page_token": next_page_token,
-                    "total_tables": len(table_names),
-                }
-            )
+        logger.info(
+            "Returned page with %s tables (total: %s), next_page_token=%s",
+            len(tables),
+            len(table_names),
+            next_page_token,
+        )
+        return _PreparedListTablesResult(
+            response=_serialize_tool_result({
+                "tables": [asdict(table) for table in tables],
+                "next_page_token": next_page_token,
+                "total_tables": len(table_names),
+            }),
+            pending_page_token=pending_page_token,
+        )
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -1503,12 +1495,13 @@ def _list_tables_impl(
         next_page_token,
     )
 
-    return _serialize_tool_result(
-        {
+    return _PreparedListTablesResult(
+        response=_serialize_tool_result({
             "tables": [asdict(table) for table in tables],
             "next_page_token": next_page_token,
             "total_tables": len(table_names),
-        }
+        }),
+        pending_page_token=pending_page_token,
     )
 
 
