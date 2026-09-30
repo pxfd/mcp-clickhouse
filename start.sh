@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Default server instructions baked into the image; an explicitly set env var wins.
+# Server instructions mounted into the pod (ConfigMap); an explicitly set env var wins.
 INSTRUCTIONS_FILE=/app/instructions/clickhouse_server_instructions.md
 if [ -z "${CLICKHOUSE_SERVER_INSTRUCTIONS:-}" ] && [ -f "$INSTRUCTIONS_FILE" ]; then
     CLICKHOUSE_SERVER_INSTRUCTIONS="$(cat "$INSTRUCTIONS_FILE")"

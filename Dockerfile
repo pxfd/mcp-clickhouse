@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --no-dev
 
 # Then install the package itself. Only the files needed to build it are copied, so
-# changes to start.sh, middlewares, auth or instructions do not rebuild the venv.
+# changes to start.sh, middlewares or auth do not rebuild the venv.
 COPY pyproject.toml uv.lock README.md /app/
 COPY mcp_clickhouse /app/mcp_clickhouse
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -57,8 +57,8 @@ COPY ./middlewares /app/middlewares
 # Copy auth providers
 COPY ./auth /app/auth
 
-# Copy default MCP server instructions (loaded by start.sh)
-COPY ./instructions /app/instructions
+# Server instructions are not baked in: start.sh loads
+# /app/instructions/clickhouse_server_instructions.md, mounted from a ConfigMap.
 
 # Run the MCP ClickHouse server by default
 ENTRYPOINT ["/app/start.sh"]
